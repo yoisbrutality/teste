@@ -1,539 +1,493 @@
-<!DOCTYPE html>
-<html lang="pt-br">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SILENT 3D</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/PointerLockControls.js"></script>
-    
-    <style>
-        body, html {
-            margin: 0; padding: 0; width: 100%; height: 100%;
-            background-color: #000; color: #fff;
-            font-family: 'Courier New', Courier, monospace;
-            overflow: hidden; user-select: none;
-        }
-
-        .screen {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            display: flex; flex-direction: column; align-items: center; justify-content: center;
-            background: radial-gradient(circle, #1a1a1a 0%, #000 100%);
-            transition: opacity 0.5s ease;
-            z-index: 10;
-        }
-
-        .hidden { opacity: 0; pointer-events: none; }
-
-        h1 { font-size: 4rem; letter-spacing: 10px; color: #aaa; text-shadow: 0 0 20px rgba(255,255,255,0.2); }
-        h2 { font-size: 2rem; }
-
-        button {
-            background: transparent; border: 1px solid #fff; color: #fff;
-            padding: 15px 50px; margin: 10px; font-size: 1.2rem; cursor: pointer; transition: 0.3s;
-        }
-
-        button:hover:not(:disabled) { background: #fff; color: #000; }
-        button:disabled { border-color: #555; color: #555; cursor: not-allowed; }
-
-        .mic-test-container {
-            width: 300px; height: 30px; border: 1px solid #fff; margin: 20px 0; position: relative;
-        }
-        #mic-test-bar { height: 100%; width: 0%; background: #fff; transition: width 0.1s; }
-
-        #crosshair {
-            position: absolute; top: 50%; left: 50%; width: 6px; height: 6px;
-            background: rgba(255,255,255,0.5); transform: translate(-50%, -50%); border-radius: 50%; z-index: 5; pointer-events: none;
-        }
-
-        #hud { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5; }
-        .hud-panel { position: absolute; padding: 20px; background: rgba(0,0,0,0.6); border: 1px solid #333; }
-        #noise-panel { top: 20px; left: 20px; width: 250px; }
-        #status-panel { bottom: 20px; left: 20px; }
-        
-        #interaction-prompt {
-            position: absolute; top: 60%; left: 50%; transform: translateX(-50%);
-            font-size: 1.5rem; text-shadow: 0 0 10px #000; opacity: 0; transition: 0.3s;
-        }
-
-        .bar-bg { width: 100%; height: 15px; background: #222; border: 1px solid #555; margin-top: 5px; }
-        #noise-bar { height: 100%; width: 0%; background: #ff0000; transition: width 0.1s; }
-
-        #puzzle-screen { background: rgba(0,0,0,0.95); z-index: 20; }
-        .puzzle-container { width: 50px; height: 300px; border: 2px solid #fff; position: relative; margin: 30px auto; background: #111; }
-        .safe-zone { position: absolute; top: 35%; width: 100%; height: 30%; background: rgba(0, 255, 0, 0.3); border-top: 1px solid #0f0; border-bottom: 1px solid #0f0; }
-        #breath-cursor { position: absolute; bottom: 50%; left: 0; width: 100%; height: 10px; background: #fff; transform: translateY(50%); }
-        #puzzle-timer { font-size: 3rem; font-weight: bold; }
-        
-        #damage-overlay {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            background: radial-gradient(circle, transparent 20%, rgba(200,0,0,0.8) 100%);
-            opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 4;
-        }
-    </style>
-</head>
-<body>
-
-    <div id="screen-menu" class="screen">
-        <h1>SILENT</h1>
-        <button onclick="goToSetup()">JOGAR</button>
-    </div>
-
-    <div id="screen-setup" class="screen hidden">
-        <h2>Ative seu Microfone</h2>
-        <div class="mic-test-container"><div id="mic-test-bar"></div></div>
-        <p id="mic-status">Aguardando permissão...</p>
-        <button id="btn-start" disabled onclick="startGame()">ENTRAR NO SHOPPING</button>
-    </div>
-
-    <div id="puzzle-screen" class="screen hidden" style="pointer-events: auto;">
-        <h2>MANTENHA A RESPIRAÇÃO</h2>
-        <p>Clique e segure o mouse para subir, solte para descer.</p>
-        <div class="puzzle-container">
-            <div class="safe-zone"></div>
-            <div id="breath-cursor"></div>
-        </div>
-        <div id="puzzle-timer">5.00</div>
-    </div>
-
-    <div id="hud" class="hidden">
-        <div id="crosshair"></div>
-        <div id="noise-panel" class="hud-panel">
-            <div>NÍVEL DE RUÍDO</div>
-            <div class="bar-bg"><div id="noise-bar"></div></div>
-        </div>
-        <div id="status-panel" class="hud-panel">
-            <div id="hud-flashlight">LANTERNA [F]: DESLIGADA</div>
-            <div id="hud-stance">POSTURA: EM PÉ</div>
-        </div>
-        <div id="interaction-prompt">Pressione [E] para Esconder</div>
-    </div>
-    
-    <div id="damage-overlay"></div>
-
-    <script>
-        // --- Variáveis de Áudio ---
-        let audioContext, analyser, microphone, dataArray;
-        let micVolume = 0;
-
-        // --- Variáveis do Jogo ---
-        let gameState = 'MENU'; 
-        let isMouseDown = false;
-        
-        // Puzzle
-        let breathPos = 50, breathVelocity = 0, puzzleTimeLeft = 5.0;
-
-        // Controle de Teclas
-        const keys = { w: false, a: false, s: false, d: false, shift: false, ctrl: false, e: false };
-
-        // --- Three.js Setup ---
-        let scene, camera, renderer, controls;
-        let flashlight, ambientLight;
-        let collidableObjects = [];
-        let closets = [];
-        let monsterMesh, monsterLight;
-        let activeCloset = null;
-
-        const clock = new THREE.Clock();
-
-        // Mapa do Shopping (1 = Parede, 0 = Chão, 2 = Armário)
-        // Tamanho 20x20. Jogador spawna no topo esquerdo, Monstro no fundo direito.
-        const mapGrid = [
-            [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
-            [1,0,0,0,1,0,0,0,0,0,1,0,0,0,0,2,0,0,0,1],
-            [1,0,1,0,1,0,1,1,1,0,1,0,1,1,1,1,1,1,0,1],
-            [1,0,1,0,0,0,0,2,1,0,0,0,0,0,0,0,0,1,0,1],
-            [1,0,1,1,1,1,1,0,1,1,1,1,1,1,1,1,0,1,0,1],
-            [1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1,0,0,0,1],
-            [1,1,1,1,1,0,1,1,1,1,1,0,1,1,0,1,1,1,1,1],
-            [1,0,0,2,0,0,0,0,0,0,1,0,1,0,0,0,0,0,0,1],
-            [1,0,1,1,1,1,1,1,1,0,1,0,1,0,1,1,1,1,0,1],
-            [1,0,1,0,0,0,0,0,1,0,0,0,1,0,1,2,0,1,0,1],
-            [1,0,1,0,1,1,1,0,1,1,1,1,1,0,1,1,0,1,0,1],
-            [1,0,1,0,1,0,0,0,0,0,0,0,0,0,0,1,0,1,0,1],
-            [1,0,1,0,1,0,1,1,1,1,1,1,1,1,0,1,0,1,0,1],
-            [1,0,0,0,1,0,0,0,0,0,0,0,2,1,0,0,0,0,0,1],
-            [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
-        ];
-        const UNIT_SIZE = 10;
-        const WALL_HEIGHT = 15;
-
-        // Player Info
-        const player = { height: 6, crouchHeight: 3, speed: 0, noiseBurst: 0, totalNoise: 0 };
-        const monsterInfo = { speed: 12, state: 'PATROL' };
-
-        // --- Inicialização de Telas e Áudio ---
-        function goToSetup() {
-            document.getElementById('screen-menu').classList.add('hidden');
-            document.getElementById('screen-setup').classList.remove('hidden');
-            gameState = 'SETUP';
-            initAudio();
-        }
-
-        async function initAudio() {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                analyser = audioContext.createAnalyser();
-                analyser.fftSize = 256;
-                microphone = audioContext.createMediaStreamSource(stream);
-                microphone.connect(analyser);
-                dataArray = new Uint8Array(analyser.frequencyBinCount);
-                document.getElementById('mic-status').innerText = "Fale para testar o som...";
-                testMic();
-            } catch (err) {
-                alert("Microfone é necessário!");
-            }
-        }
-
-        function testMic() {
-            if (gameState !== 'SETUP') return;
-            analyser.getByteFrequencyData(dataArray);
-            let sum = dataArray.reduce((a, b) => a + b, 0);
-            micVolume = sum / dataArray.length;
-            let barW = Math.min(100, micVolume * 2);
-            document.getElementById('mic-test-bar').style.width = barW + '%';
-            if (barW > 10) {
-                let btn = document.getElementById('btn-start');
-                btn.disabled = false; btn.innerText = "ENTRAR NO SHOPPING";
-            }
-            requestAnimationFrame(testMic);
-        }
-
-        function startGame() {
-            document.getElementById('screen-setup').classList.add('hidden');
-            document.getElementById('hud').classList.remove('hidden');
-            
-            if(audioContext.state === 'suspended') audioContext.resume();
-            
-            init3D();
-            gameState = 'PLAYING';
-            controls.lock();
-            animate();
-        }
-
-        // --- Setup Three.js (Mundo 3D) ---
-        function init3D() {
-            scene = new THREE.Scene();
-            scene.fog = new THREE.FogExp2(0x020202, 0.05);
-
-            camera = new THREE.PerspectiveCamera(75, window.innerWidth/innerHeight, 0.1, 1000);
-            camera.position.set(UNIT_SIZE * 1.5, player.height, UNIT_SIZE * 1.5); // Spawn Topo Esquerdo
-
-            renderer = new THREE.WebGLRenderer({ antialias: true });
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setClearColor(0x020202);
-            document.body.appendChild(renderer.domElement);
-
-            // Controles FPS
-            controls = new THREE.PointerLockControls(camera, renderer.domElement);
-            controls.addEventListener('lock', () => { if(gameState === 'HIDING') controls.unlock(); });
-            controls.addEventListener('unlock', () => { 
-                if(gameState === 'PLAYING') {
-                    // Jogo Pausado ou perdeu o foco.
-                }
-            });
-
-            // Luzes
-            ambientLight = new THREE.AmbientLight(0x111111); // Muito escuro
-            scene.add(ambientLight);
-
-            flashlight = new THREE.SpotLight(0xffffee, 0, 150, Math.PI/6, 0.5, 1);
-            flashlight.position.set(0, 0, 0);
-            flashlight.target.position.set(0, 0, -1);
-            camera.add(flashlight);
-            camera.add(flashlight.target);
-            scene.add(camera); // Adiciona a câmera (e a lanterna ligada a ela) na cena
-
-            buildWorld();
-            spawnMonster();
-
-            window.addEventListener('resize', () => {
-                camera.aspect = window.innerWidth / window.innerHeight;
-                camera.updateProjectionMatrix();
-                renderer.setSize(window.innerWidth, window.innerHeight);
-            });
-        }
-
-        function buildWorld() {
-            const floorGeo = new THREE.PlaneGeometry(UNIT_SIZE * mapGrid[0].length, UNIT_SIZE * mapGrid.length);
-            const floorMat = new THREE.MeshPhongMaterial({ color: 0x1a1a1a });
-            const floor = new THREE.Mesh(floorGeo, floorMat);
-            floor.rotation.x = -Math.PI / 2;
-            floor.position.set((UNIT_SIZE * mapGrid[0].length)/2, 0, (UNIT_SIZE * mapGrid.length)/2);
-            scene.add(floor);
-
-            const ceilingMat = new THREE.MeshPhongMaterial({ color: 0x0a0a0a });
-            const ceiling = new THREE.Mesh(floorGeo, ceilingMat);
-            ceiling.rotation.x = Math.PI / 2;
-            ceiling.position.set((UNIT_SIZE * mapGrid[0].length)/2, WALL_HEIGHT, (UNIT_SIZE * mapGrid.length)/2);
-            scene.add(ceiling);
-
-            const wallGeo = new THREE.BoxGeometry(UNIT_SIZE, WALL_HEIGHT, UNIT_SIZE);
-            const wallMat = new THREE.MeshPhongMaterial({ color: 0x2a2a2a });
-            const closetMat = new THREE.MeshPhongMaterial({ color: 0x103050, emissive: 0x001133 }); // Azul escuro
-
-            for (let z = 0; z < mapGrid.length; z++) {
-                for (let x = 0; x < mapGrid[z].length; x++) {
-                    if (mapGrid[z][x] === 1) {
-                        let wall = new THREE.Mesh(wallGeo, wallMat);
-                        wall.position.set(x * UNIT_SIZE + UNIT_SIZE/2, WALL_HEIGHT/2, z * UNIT_SIZE + UNIT_SIZE/2);
-                        scene.add(wall);
-                        collidableObjects.push(wall);
-                    } else if (mapGrid[z][x] === 2) {
-                        let closet = new THREE.Mesh(wallGeo, closetMat);
-                        // Fazer o armário um pouco menor que a parede
-                        closet.scale.set(0.8, 1, 0.8);
-                        closet.position.set(x * UNIT_SIZE + UNIT_SIZE/2, WALL_HEIGHT/2, z * UNIT_SIZE + UNIT_SIZE/2);
-                        scene.add(closet);
-                        collidableObjects.push(closet); // Também tem colisão
-                        closets.push({ mesh: closet, x: closet.position.x, z: closet.position.z });
-                    }
-                }
-            }
-        }
-
-        function spawnMonster() {
-            const geo = new THREE.CylinderGeometry(2, 2, WALL_HEIGHT - 2, 8);
-            const mat = new THREE.MeshPhongMaterial({ color: 0x000000, emissive: 0x220000 });
-            monsterMesh = new THREE.Mesh(geo, mat);
-            
-            // Spawn Longe (Canto inferior direito da grid)
-            let spawnX = (mapGrid[0].length - 2) * UNIT_SIZE;
-            let spawnZ = (mapGrid.length - 2) * UNIT_SIZE;
-            monsterMesh.position.set(spawnX, (WALL_HEIGHT - 2)/2, spawnZ);
-            scene.add(monsterMesh);
-
-            // Luz vermelha aterrorizante acompanhando ele
-            monsterLight = new THREE.PointLight(0xff0000, 1, 80);
-            monsterMesh.add(monsterLight);
-        }
-
-        // --- Inputs ---
-        window.addEventListener('keydown', e => {
-            const k = e.key.toLowerCase();
-            if (k === 'control') keys.ctrl = true;
-            else if (keys.hasOwnProperty(k)) keys[k] = true;
-
-            if (k === 'f' && gameState === 'PLAYING') {
-                flashlight.intensity = flashlight.intensity === 0 ? 1 : 0;
-                player.noiseBurst += 2;
-                document.getElementById('hud-flashlight').innerText = `LANTERNA [F]: ${flashlight.intensity > 0 ? 'LIGADA' : 'DESLIGADA'}`;
-            }
-
-            if (k === 'e' && activeCloset && gameState === 'PLAYING') {
-                startPuzzle();
-            }
-        });
-        window.addEventListener('keyup', e => {
-            const k = e.key.toLowerCase();
-            if (k === 'control') keys.ctrl = false;
-            else if (keys.hasOwnProperty(k)) keys[k] = false;
-        });
-        window.addEventListener('mousedown', () => isMouseDown = true);
-        window.addEventListener('mouseup', () => isMouseDown = false);
-
-        // --- Lógica de Jogo ---
-
-        function checkCollision(pos) {
-            // Colisão simples por AABB 2D (ignora Y)
-            let radius = 2; // raio do jogador
-            for (let obj of collidableObjects) {
-                let box = new THREE.Box3().setFromObject(obj);
-                if (pos.x + radius > box.min.x && pos.x - radius < box.max.x &&
-                    pos.z + radius > box.min.z && pos.z - radius < box.max.z) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        function updatePlayer(delta) {
-            // Postura e Velocidade
-            let moveNoise = 0;
-            let stanceText = "EM PÉ";
-            let targetHeight = player.height;
-
-            if (keys.ctrl) {
-                player.speed = 15; moveNoise = 1; stanceText = "AGACHADO"; targetHeight = player.crouchHeight;
-            } else if (keys.shift) {
-                player.speed = 35; moveNoise = 15; stanceText = "CORRENDO";
-            } else {
-                player.speed = 20; moveNoise = 5;
-            }
-            
-            // Suaviza a câmera ao agachar
-            camera.position.y += (targetHeight - camera.position.y) * 10 * delta;
-
-            // Movimento direcional usando PointerLockControls
-            let isMoving = keys.w || keys.a || keys.s || keys.d;
-            if (!isMoving) { moveNoise = keys.ctrl ? 0 : 0; stanceText += " (PARADO)"; }
-
-            let dir = new THREE.Vector3();
-            if (keys.w) dir.z -= 1;
-            if (keys.s) dir.z += 1;
-            if (keys.a) dir.x -= 1;
-            if (keys.d) dir.x += 1;
-            dir.normalize();
-
-            if (isMoving) {
-                // Salva posição anterior
-                let oldPos = camera.position.clone();
-                
-                // Mover em X (em relação ao ângulo de visão)
-                controls.moveRight(dir.x * player.speed * delta);
-                if(checkCollision(camera.position)) camera.position.x = oldPos.x;
-
-                // Mover em Z (frente/trás)
-                controls.moveForward(-dir.z * player.speed * delta);
-                if(checkCollision(camera.position)) camera.position.z = oldPos.z;
-            }
-
-            document.getElementById('hud-stance').innerText = `POSTURA: ${stanceText}`;
-
-            // Calculo de Ruído
-            analyser.getByteFrequencyData(dataArray);
-            let sum = dataArray.reduce((a, b) => a + b, 0);
-            micVolume = sum / dataArray.length;
-
-            if (player.noiseBurst > 0) player.noiseBurst -= delta * 5;
-            if (player.noiseBurst < 0) player.noiseBurst = 0;
-
-            player.totalNoise = moveNoise + (micVolume * 0.8) + player.noiseBurst;
-            let barW = Math.min(100, (player.totalNoise / 40) * 100);
-            document.getElementById('noise-bar').style.width = barW + '%';
-
-            // Checar Armários próximos
-            activeCloset = null;
-            document.getElementById('interaction-prompt').style.opacity = 0;
-            for (let c of closets) {
-                let dist = Math.hypot(camera.position.x - c.x, camera.position.z - c.z);
-                if (dist < 15) {
-                    activeCloset = c;
-                    document.getElementById('interaction-prompt').style.opacity = 1;
-                    break;
-                }
-            }
-        }
-
-        function updateMonster(delta) {
-            let px = camera.position.x;
-            let pz = camera.position.z;
-            let mx = monsterMesh.position.x;
-            let mz = monsterMesh.position.z;
-
-            let dist = Math.hypot(px - mx, pz - mz);
-            let hearingRadius = 40 + (player.totalNoise * 3); // Escuta mais longe com barulho
-
-            // Efeito visual de proximidade (Luz de Dano/Medo)
-            if (dist < 50) {
-                document.getElementById('damage-overlay').style.opacity = 1 - (dist/50);
-            } else {
-                document.getElementById('damage-overlay').style.opacity = 0;
-            }
-
-            if (dist < hearingRadius && gameState === 'PLAYING') {
-                monsterInfo.state = 'CHASE';
-                monsterInfo.speed = 30; // Monstro muito rápido
-            } else {
-                monsterInfo.state = 'PATROL';
-                monsterInfo.speed = 8;
-            }
-
-            // Movimento básico em direção ao player se CHASE
-            if (monsterInfo.state === 'CHASE') {
-                let angle = Math.atan2(pz - mz, px - mx);
-                let moveX = Math.cos(angle) * monsterInfo.speed * delta;
-                let moveZ = Math.sin(angle) * monsterInfo.speed * delta;
-                
-                // Mover monstro (sem colisão complexa para não prender a IA)
-                monsterMesh.position.x += moveX;
-                monsterMesh.position.z += moveZ;
-
-                // Game Over
-                if (dist < 8 && gameState === 'PLAYING') {
-                    gameOver();
-                }
-            } else {
-                // Patrol aleatório simples (tremor/vagabundear)
-                monsterMesh.position.x += (Math.random() - 0.5) * monsterInfo.speed * delta;
-                monsterMesh.position.z += (Math.random() - 0.5) * monsterInfo.speed * delta;
-            }
-        }
-
-        // --- Puzzle de Respiração ---
-        function startPuzzle() {
-            gameState = 'HIDING';
-            controls.unlock(); // Libera o mouse para clicar na UI
-            document.getElementById('hud').classList.add('hidden');
-            document.getElementById('puzzle-screen').classList.remove('hidden');
-            breathPos = 50; breathVelocity = 0; puzzleTimeLeft = 5.0;
-        }
-
-        function updatePuzzle(delta) {
-            if (isMouseDown) breathVelocity -= 60 * delta; // Sobe
-            else breathVelocity += 60 * delta; // Gravidade
-
-            breathVelocity *= 0.9; // Atrito
-            breathPos += breathVelocity * delta;
-            breathPos = Math.max(0, Math.min(100, breathPos));
-            
-            document.getElementById('breath-cursor').style.bottom = breathPos + '%';
-
-            if (breathPos >= 35 && breathPos <= 65) {
-                puzzleTimeLeft -= delta;
-            } else {
-                puzzleTimeLeft = 5.0;
-                if (micVolume > 20) {
-                    controls.lock();
-                    gameOver();
-                }
-            }
-
-            document.getElementById('puzzle-timer').innerText = Math.max(0, puzzleTimeLeft).toFixed(2);
-
-            if (puzzleTimeLeft <= 0) winPuzzle();
-        }
-
-        function winPuzzle() {
-            gameState = 'PLAYING';
-            // Punição invertida: Monstro reseta longe de novo!
-            let spawnX = (mapGrid[0].length - 2) * UNIT_SIZE;
-            let spawnZ = (mapGrid.length - 2) * UNIT_SIZE;
-            monsterMesh.position.set(spawnX, (WALL_HEIGHT - 2)/2, spawnZ);
-            
-            document.getElementById('puzzle-screen').classList.add('hidden');
-            document.getElementById('hud').classList.remove('hidden');
-            controls.lock(); // Trava o mouse no jogo de novo
-        }
-
-        function gameOver() {
-            gameState = 'GAMEOVER';
-            document.body.innerHTML = `
-                <div class="screen" style="background: darkred;">
-                    <h1 style="color:#000; text-shadow: 0 0 20px #fff;">PEGO</h1>
-                    <p>Ele te escutou no escuro.</p>
-                    <button onclick="location.reload()">REINICIAR</button>
-                </div>
-            `;
-        }
-
-        // --- Loop Render ---
-        function animate() {
-            if (gameState === 'GAMEOVER') return;
-            requestAnimationFrame(animate);
-
-            let delta = clock.getDelta();
-
-            if (gameState === 'PLAYING') {
-                updatePlayer(delta);
-                updateMonster(delta);
-            } else if (gameState === 'HIDING') {
-                updatePuzzle(delta);
-            }
-
-            renderer.render(scene, camera);
-        }
-    </script>
-</body>
-</html>
+diff --git a/index.html b/index.html
+index 4671f7c2fa206a646c3aa108f591c3a2e60451c5..3fa3222aa05bc182b7ab50e7d17b78a427d8a422 100644
+--- a/index.html
++++ b/index.html
+@@ -90,450 +90,427 @@
+         <h2>MANTENHA A RESPIRAÇÃO</h2>
+         <p>Clique e segure o mouse para subir, solte para descer.</p>
+         <div class="puzzle-container">
+             <div class="safe-zone"></div>
+             <div id="breath-cursor"></div>
+         </div>
+         <div id="puzzle-timer">5.00</div>
+     </div>
+ 
+     <div id="hud" class="hidden">
+         <div id="crosshair"></div>
+         <div id="noise-panel" class="hud-panel">
+             <div>NÍVEL DE RUÍDO</div>
+             <div class="bar-bg"><div id="noise-bar"></div></div>
+         </div>
+         <div id="status-panel" class="hud-panel">
+             <div id="hud-flashlight">LANTERNA [F]: DESLIGADA</div>
+             <div id="hud-stance">POSTURA: EM PÉ</div>
+         </div>
+         <div id="interaction-prompt">Pressione [E] para Esconder</div>
+     </div>
+     
+     <div id="damage-overlay"></div>
+ 
+     <script>
+-        // --- Variáveis de Áudio ---
++
+         let audioContext, analyser, microphone, dataArray;
+         let micVolume = 0;
+ 
+-        // --- Variáveis do Jogo ---
+         let gameState = 'MENU'; 
+         let isMouseDown = false;
+-        
+-        // Puzzle
++
+         let breathPos = 50, breathVelocity = 0, puzzleTimeLeft = 5.0;
+ 
+-        // Controle de Teclas
+         const keys = { w: false, a: false, s: false, d: false, shift: false, ctrl: false, e: false };
+ 
+-        // --- Three.js Setup ---
+         let scene, camera, renderer, controls;
+         let flashlight, ambientLight;
+         let collidableObjects = [];
+         let closets = [];
+         let monsterMesh, monsterLight;
+         let activeCloset = null;
+ 
+         const clock = new THREE.Clock();
+ 
+-        // Mapa do Shopping (1 = Parede, 0 = Chão, 2 = Armário)
+-        // Tamanho 20x20. Jogador spawna no topo esquerdo, Monstro no fundo direito.
+         const mapGrid = [
+             [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+             [1,0,0,0,1,0,0,0,0,0,1,0,0,0,0,2,0,0,0,1],
+             [1,0,1,0,1,0,1,1,1,0,1,0,1,1,1,1,1,1,0,1],
+             [1,0,1,0,0,0,0,2,1,0,0,0,0,0,0,0,0,1,0,1],
+             [1,0,1,1,1,1,1,0,1,1,1,1,1,1,1,1,0,1,0,1],
+             [1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1,0,0,0,1],
+             [1,1,1,1,1,0,1,1,1,1,1,0,1,1,0,1,1,1,1,1],
+             [1,0,0,2,0,0,0,0,0,0,1,0,1,0,0,0,0,0,0,1],
+             [1,0,1,1,1,1,1,1,1,0,1,0,1,0,1,1,1,1,0,1],
+             [1,0,1,0,0,0,0,0,1,0,0,0,1,0,1,2,0,1,0,1],
+             [1,0,1,0,1,1,1,0,1,1,1,1,1,0,1,1,0,1,0,1],
+             [1,0,1,0,1,0,0,0,0,0,0,0,0,0,0,1,0,1,0,1],
+             [1,0,1,0,1,0,1,1,1,1,1,1,1,1,0,1,0,1,0,1],
+             [1,0,0,0,1,0,0,0,0,0,0,0,2,1,0,0,0,0,0,1],
+             [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+         ];
+         const UNIT_SIZE = 10;
+         const WALL_HEIGHT = 15;
+ 
+-        // Player Info
+         const player = { height: 6, crouchHeight: 3, speed: 0, noiseBurst: 0, totalNoise: 0 };
+         const monsterInfo = { speed: 12, state: 'PATROL' };
+ 
+-        // --- Inicialização de Telas e Áudio ---
+         function goToSetup() {
+             document.getElementById('screen-menu').classList.add('hidden');
+             document.getElementById('screen-setup').classList.remove('hidden');
+             gameState = 'SETUP';
+             initAudio();
+         }
+ 
+         async function initAudio() {
+             try {
+                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                 audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                 analyser = audioContext.createAnalyser();
+                 analyser.fftSize = 256;
+                 microphone = audioContext.createMediaStreamSource(stream);
+                 microphone.connect(analyser);
+                 dataArray = new Uint8Array(analyser.frequencyBinCount);
+                 document.getElementById('mic-status').innerText = "Fale para testar o som...";
+                 testMic();
+             } catch (err) {
+                 alert("Microfone é necessário!");
+             }
+         }
+ 
+         function testMic() {
+             if (gameState !== 'SETUP') return;
+             analyser.getByteFrequencyData(dataArray);
+             let sum = dataArray.reduce((a, b) => a + b, 0);
+             micVolume = sum / dataArray.length;
+             let barW = Math.min(100, micVolume * 2);
+             document.getElementById('mic-test-bar').style.width = barW + '%';
+             if (barW > 10) {
+                 let btn = document.getElementById('btn-start');
+                 btn.disabled = false; btn.innerText = "ENTRAR NO SHOPPING";
+             }
+             requestAnimationFrame(testMic);
+         }
+ 
+         function startGame() {
+             document.getElementById('screen-setup').classList.add('hidden');
+             document.getElementById('hud').classList.remove('hidden');
+-            
+-            if(audioContext.state === 'suspended') audioContext.resume();
+-            
++
++            if (!audioContext || !analyser || !dataArray) {
++                alert('Microfone não inicializado.');
++                return;
++            }
++
++            if (audioContext.state === 'suspended') audioContext.resume();
++
+             init3D();
+             gameState = 'PLAYING';
+             controls.lock();
+             animate();
+         }
+ 
+-        // --- Setup Three.js (Mundo 3D) ---
+         function init3D() {
+             scene = new THREE.Scene();
+             scene.fog = new THREE.FogExp2(0x020202, 0.05);
+ 
+-            camera = new THREE.PerspectiveCamera(75, window.innerWidth/innerHeight, 0.1, 1000);
+-            camera.position.set(UNIT_SIZE * 1.5, player.height, UNIT_SIZE * 1.5); // Spawn Topo Esquerdo
++            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
++            camera.position.set(UNIT_SIZE * 1.5, player.height, UNIT_SIZE * 1.5);
+ 
+             renderer = new THREE.WebGLRenderer({ antialias: true });
+             renderer.setSize(window.innerWidth, window.innerHeight);
+             renderer.setClearColor(0x020202);
+             document.body.appendChild(renderer.domElement);
+ 
+-            // Controles FPS
+             controls = new THREE.PointerLockControls(camera, renderer.domElement);
+             controls.addEventListener('lock', () => { if(gameState === 'HIDING') controls.unlock(); });
+             controls.addEventListener('unlock', () => { 
+                 if(gameState === 'PLAYING') {
+-                    // Jogo Pausado ou perdeu o foco.
++
+                 }
+             });
+ 
+-            // Luzes
+-            ambientLight = new THREE.AmbientLight(0x111111); // Muito escuro
++            ambientLight = new THREE.AmbientLight(0x111111);
+             scene.add(ambientLight);
+ 
+             flashlight = new THREE.SpotLight(0xffffee, 0, 150, Math.PI/6, 0.5, 1);
+             flashlight.position.set(0, 0, 0);
+             flashlight.target.position.set(0, 0, -1);
+             camera.add(flashlight);
+             camera.add(flashlight.target);
+-            scene.add(camera); // Adiciona a câmera (e a lanterna ligada a ela) na cena
++            scene.add(camera);
+ 
+             buildWorld();
+             spawnMonster();
+ 
+             window.addEventListener('resize', () => {
+                 camera.aspect = window.innerWidth / window.innerHeight;
+                 camera.updateProjectionMatrix();
+                 renderer.setSize(window.innerWidth, window.innerHeight);
+             });
+         }
+ 
+         function buildWorld() {
+             const floorGeo = new THREE.PlaneGeometry(UNIT_SIZE * mapGrid[0].length, UNIT_SIZE * mapGrid.length);
+             const floorMat = new THREE.MeshPhongMaterial({ color: 0x1a1a1a });
+             const floor = new THREE.Mesh(floorGeo, floorMat);
+             floor.rotation.x = -Math.PI / 2;
+             floor.position.set((UNIT_SIZE * mapGrid[0].length)/2, 0, (UNIT_SIZE * mapGrid.length)/2);
+             scene.add(floor);
+ 
+             const ceilingMat = new THREE.MeshPhongMaterial({ color: 0x0a0a0a });
+             const ceiling = new THREE.Mesh(floorGeo, ceilingMat);
+             ceiling.rotation.x = Math.PI / 2;
+             ceiling.position.set((UNIT_SIZE * mapGrid[0].length)/2, WALL_HEIGHT, (UNIT_SIZE * mapGrid.length)/2);
+             scene.add(ceiling);
+ 
+             const wallGeo = new THREE.BoxGeometry(UNIT_SIZE, WALL_HEIGHT, UNIT_SIZE);
+             const wallMat = new THREE.MeshPhongMaterial({ color: 0x2a2a2a });
+-            const closetMat = new THREE.MeshPhongMaterial({ color: 0x103050, emissive: 0x001133 }); // Azul escuro
++            const closetMat = new THREE.MeshPhongMaterial({ color: 0x103050, emissive: 0x001133 });
+ 
+             for (let z = 0; z < mapGrid.length; z++) {
+                 for (let x = 0; x < mapGrid[z].length; x++) {
+                     if (mapGrid[z][x] === 1) {
+                         let wall = new THREE.Mesh(wallGeo, wallMat);
+                         wall.position.set(x * UNIT_SIZE + UNIT_SIZE/2, WALL_HEIGHT/2, z * UNIT_SIZE + UNIT_SIZE/2);
+                         scene.add(wall);
+                         collidableObjects.push(wall);
+                     } else if (mapGrid[z][x] === 2) {
+                         let closet = new THREE.Mesh(wallGeo, closetMat);
+-                        // Fazer o armário um pouco menor que a parede
++
+                         closet.scale.set(0.8, 1, 0.8);
+                         closet.position.set(x * UNIT_SIZE + UNIT_SIZE/2, WALL_HEIGHT/2, z * UNIT_SIZE + UNIT_SIZE/2);
+                         scene.add(closet);
+-                        collidableObjects.push(closet); // Também tem colisão
++                        collidableObjects.push(closet);
+                         closets.push({ mesh: closet, x: closet.position.x, z: closet.position.z });
+                     }
+                 }
+             }
+         }
+ 
+         function spawnMonster() {
+             const geo = new THREE.CylinderGeometry(2, 2, WALL_HEIGHT - 2, 8);
+             const mat = new THREE.MeshPhongMaterial({ color: 0x000000, emissive: 0x220000 });
+             monsterMesh = new THREE.Mesh(geo, mat);
+-            
+-            // Spawn Longe (Canto inferior direito da grid)
++
+             let spawnX = (mapGrid[0].length - 2) * UNIT_SIZE;
+             let spawnZ = (mapGrid.length - 2) * UNIT_SIZE;
+             monsterMesh.position.set(spawnX, (WALL_HEIGHT - 2)/2, spawnZ);
+             scene.add(monsterMesh);
+ 
+-            // Luz vermelha aterrorizante acompanhando ele
+             monsterLight = new THREE.PointLight(0xff0000, 1, 80);
+             monsterMesh.add(monsterLight);
+         }
+ 
+-        // --- Inputs ---
+         window.addEventListener('keydown', e => {
+             const k = e.key.toLowerCase();
+             if (k === 'control') keys.ctrl = true;
+             else if (keys.hasOwnProperty(k)) keys[k] = true;
+ 
+             if (k === 'f' && gameState === 'PLAYING') {
+                 flashlight.intensity = flashlight.intensity === 0 ? 1 : 0;
+                 player.noiseBurst += 2;
+                 document.getElementById('hud-flashlight').innerText = `LANTERNA [F]: ${flashlight.intensity > 0 ? 'LIGADA' : 'DESLIGADA'}`;
+             }
+ 
+             if (k === 'e' && activeCloset && gameState === 'PLAYING') {
+                 startPuzzle();
+             }
+         });
+         window.addEventListener('keyup', e => {
+             const k = e.key.toLowerCase();
+             if (k === 'control') keys.ctrl = false;
+             else if (keys.hasOwnProperty(k)) keys[k] = false;
+         });
+         window.addEventListener('mousedown', () => isMouseDown = true);
+         window.addEventListener('mouseup', () => isMouseDown = false);
+ 
+-        // --- Lógica de Jogo ---
+-
+         function checkCollision(pos) {
+-            // Colisão simples por AABB 2D (ignora Y)
+-            let radius = 2; // raio do jogador
++
++            let radius = 2;
+             for (let obj of collidableObjects) {
+                 let box = new THREE.Box3().setFromObject(obj);
+                 if (pos.x + radius > box.min.x && pos.x - radius < box.max.x &&
+                     pos.z + radius > box.min.z && pos.z - radius < box.max.z) {
+                     return true;
+                 }
+             }
+             return false;
+         }
+ 
+         function updatePlayer(delta) {
+-            // Postura e Velocidade
++
+             let moveNoise = 0;
+             let stanceText = "EM PÉ";
+             let targetHeight = player.height;
+ 
+             if (keys.ctrl) {
+                 player.speed = 15; moveNoise = 1; stanceText = "AGACHADO"; targetHeight = player.crouchHeight;
+             } else if (keys.shift) {
+                 player.speed = 35; moveNoise = 15; stanceText = "CORRENDO";
+             } else {
+                 player.speed = 20; moveNoise = 5;
+             }
+-            
+-            // Suaviza a câmera ao agachar
++
+             camera.position.y += (targetHeight - camera.position.y) * 10 * delta;
+ 
+-            // Movimento direcional usando PointerLockControls
+             let isMoving = keys.w || keys.a || keys.s || keys.d;
+-            if (!isMoving) { moveNoise = keys.ctrl ? 0 : 0; stanceText += " (PARADO)"; }
++            if (!isMoving) { moveNoise = 0; stanceText += " (PARADO)"; }
+ 
+             let dir = new THREE.Vector3();
+             if (keys.w) dir.z -= 1;
+             if (keys.s) dir.z += 1;
+             if (keys.a) dir.x -= 1;
+             if (keys.d) dir.x += 1;
+             dir.normalize();
+ 
+             if (isMoving) {
+-                // Salva posição anterior
++
+                 let oldPos = camera.position.clone();
+-                
+-                // Mover em X (em relação ao ângulo de visão)
++
+                 controls.moveRight(dir.x * player.speed * delta);
+                 if(checkCollision(camera.position)) camera.position.x = oldPos.x;
+ 
+-                // Mover em Z (frente/trás)
+                 controls.moveForward(-dir.z * player.speed * delta);
+                 if(checkCollision(camera.position)) camera.position.z = oldPos.z;
+             }
+ 
+             document.getElementById('hud-stance').innerText = `POSTURA: ${stanceText}`;
+ 
+-            // Calculo de Ruído
+             analyser.getByteFrequencyData(dataArray);
+             let sum = dataArray.reduce((a, b) => a + b, 0);
+             micVolume = sum / dataArray.length;
+ 
+             if (player.noiseBurst > 0) player.noiseBurst -= delta * 5;
+             if (player.noiseBurst < 0) player.noiseBurst = 0;
+ 
+             player.totalNoise = moveNoise + (micVolume * 0.8) + player.noiseBurst;
+             let barW = Math.min(100, (player.totalNoise / 40) * 100);
+             document.getElementById('noise-bar').style.width = barW + '%';
+ 
+-            // Checar Armários próximos
+             activeCloset = null;
+             document.getElementById('interaction-prompt').style.opacity = 0;
+             for (let c of closets) {
+                 let dist = Math.hypot(camera.position.x - c.x, camera.position.z - c.z);
+                 if (dist < 15) {
+                     activeCloset = c;
+                     document.getElementById('interaction-prompt').style.opacity = 1;
+                     break;
+                 }
+             }
+         }
+ 
+         function updateMonster(delta) {
+             let px = camera.position.x;
+             let pz = camera.position.z;
+             let mx = monsterMesh.position.x;
+             let mz = monsterMesh.position.z;
+ 
+             let dist = Math.hypot(px - mx, pz - mz);
+-            let hearingRadius = 40 + (player.totalNoise * 3); // Escuta mais longe com barulho
++            let hearingRadius = 40 + (player.totalNoise * 3);
+ 
+-            // Efeito visual de proximidade (Luz de Dano/Medo)
+             if (dist < 50) {
+                 document.getElementById('damage-overlay').style.opacity = 1 - (dist/50);
+             } else {
+                 document.getElementById('damage-overlay').style.opacity = 0;
+             }
+ 
+             if (dist < hearingRadius && gameState === 'PLAYING') {
+                 monsterInfo.state = 'CHASE';
+-                monsterInfo.speed = 30; // Monstro muito rápido
++                monsterInfo.speed = 30;
+             } else {
+                 monsterInfo.state = 'PATROL';
+                 monsterInfo.speed = 8;
+             }
+ 
+-            // Movimento básico em direção ao player se CHASE
+             if (monsterInfo.state === 'CHASE') {
+                 let angle = Math.atan2(pz - mz, px - mx);
+                 let moveX = Math.cos(angle) * monsterInfo.speed * delta;
+                 let moveZ = Math.sin(angle) * monsterInfo.speed * delta;
+-                
+-                // Mover monstro (sem colisão complexa para não prender a IA)
++
+                 monsterMesh.position.x += moveX;
+                 monsterMesh.position.z += moveZ;
+ 
+-                // Game Over
+                 if (dist < 8 && gameState === 'PLAYING') {
+                     gameOver();
+                 }
+             } else {
+-                // Patrol aleatório simples (tremor/vagabundear)
++
+                 monsterMesh.position.x += (Math.random() - 0.5) * monsterInfo.speed * delta;
+                 monsterMesh.position.z += (Math.random() - 0.5) * monsterInfo.speed * delta;
+             }
+         }
+ 
+-        // --- Puzzle de Respiração ---
+         function startPuzzle() {
+             gameState = 'HIDING';
+-            controls.unlock(); // Libera o mouse para clicar na UI
++            controls.unlock();
+             document.getElementById('hud').classList.add('hidden');
+             document.getElementById('puzzle-screen').classList.remove('hidden');
+             breathPos = 50; breathVelocity = 0; puzzleTimeLeft = 5.0;
+         }
+ 
+         function updatePuzzle(delta) {
+-            if (isMouseDown) breathVelocity -= 60 * delta; // Sobe
+-            else breathVelocity += 60 * delta; // Gravidade
++            if (isMouseDown) breathVelocity -= 60 * delta;
++            else breathVelocity += 60 * delta;
+ 
+-            breathVelocity *= 0.9; // Atrito
++            breathVelocity *= 0.9;
+             breathPos += breathVelocity * delta;
+             breathPos = Math.max(0, Math.min(100, breathPos));
+-            
++
+             document.getElementById('breath-cursor').style.bottom = breathPos + '%';
+ 
+             if (breathPos >= 35 && breathPos <= 65) {
+                 puzzleTimeLeft -= delta;
+             } else {
+                 puzzleTimeLeft = 5.0;
+                 if (micVolume > 20) {
+                     controls.lock();
+                     gameOver();
+                 }
+             }
+ 
+             document.getElementById('puzzle-timer').innerText = Math.max(0, puzzleTimeLeft).toFixed(2);
+ 
+             if (puzzleTimeLeft <= 0) winPuzzle();
+         }
+ 
+         function winPuzzle() {
+             gameState = 'PLAYING';
+-            // Punição invertida: Monstro reseta longe de novo!
++
+             let spawnX = (mapGrid[0].length - 2) * UNIT_SIZE;
+             let spawnZ = (mapGrid.length - 2) * UNIT_SIZE;
+             monsterMesh.position.set(spawnX, (WALL_HEIGHT - 2)/2, spawnZ);
+-            
++
+             document.getElementById('puzzle-screen').classList.add('hidden');
+             document.getElementById('hud').classList.remove('hidden');
+-            controls.lock(); // Trava o mouse no jogo de novo
++            controls.lock();
+         }
+ 
+         function gameOver() {
+             gameState = 'GAMEOVER';
+             document.body.innerHTML = `
+                 <div class="screen" style="background: darkred;">
+                     <h1 style="color:#000; text-shadow: 0 0 20px #fff;">PEGO</h1>
+                     <p>Ele te escutou no escuro.</p>
+                     <button onclick="location.reload()">REINICIAR</button>
+                 </div>
+             `;
+         }
+ 
+-        // --- Loop Render ---
+         function animate() {
+             if (gameState === 'GAMEOVER') return;
+             requestAnimationFrame(animate);
+ 
+             let delta = clock.getDelta();
+ 
+             if (gameState === 'PLAYING') {
+                 updatePlayer(delta);
+                 updateMonster(delta);
+             } else if (gameState === 'HIDING') {
+                 updatePuzzle(delta);
+             }
+ 
+             renderer.render(scene, camera);
+         }
+     </script>
+ </body>
+ </html>
